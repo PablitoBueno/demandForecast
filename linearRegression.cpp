@@ -14,30 +14,30 @@
 using namespace std;
 using namespace Eigen;
 
-// Função para conectar ao banco de dados
+// Function to connect to the database
 sqlite3* connectDB(const char* dbName) {
     sqlite3* db;
     if (sqlite3_open(dbName, &db)) {
-        cerr << "Erro ao abrir o banco de dados: " << sqlite3_errmsg(db) << endl;
+        cerr << "Error opening database: " << sqlite3_errmsg(db) << endl;
         return nullptr;
     }
     return db;
 }
 
-// Função para obter os dados de vendas
-vector<pair<int, double>> getSalesData(sqlite3* db, int produto_id) {
+// Function to fetch sales data for a given product
+vector<pair<int, double>> getSalesData(sqlite3* db, int product_id) {
     sqlite3_stmt* stmt;
     vector<pair<int, double>> salesData;
-    const char* query = "SELECT data, vendas FROM Vendas WHERE produto_id = ?;";
+    const char* query = "SELECT date, sales FROM Sales WHERE product_id = ?;";
     if (sqlite3_prepare_v2(db, query, -1, &stmt, 0) != SQLITE_OK) {
-        cerr << "Erro ao preparar query: " << sqlite3_errmsg(db) << endl;
+        cerr << "Error preparing query: " << sqlite3_errmsg(db) << endl;
         return salesData;
     }
-    sqlite3_bind_int(stmt, 1, produto_id);
+    sqlite3_bind_int(stmt, 1, product_id);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         const unsigned char* dateText = sqlite3_column_text(stmt, 0);
         if (dateText == nullptr) {
-            cerr << "Data nula encontrada para o produto ID: " << produto_id << endl;
+            cerr << "Null date found for product ID: " << product_id << endl;
             continue;
         }
         double sales = sqlite3_column_double(stmt, 1);
@@ -48,43 +48,43 @@ vector<pair<int, double>> getSalesData(sqlite3* db, int produto_id) {
     return salesData;
 }
 
-// Função para realizar a regressão linear
+// Function to perform linear regression
 double linearRegression(vector<pair<int, double>>& data) {
     int n = data.size();
     if (n < 2) {
-        return 0;
+        return 0; // Regression cannot be performed with less than 2 data points
     }
     int firstDate = data[0].first;
     for (auto& entry : data) {
-        entry.first = entry.first - firstDate;
+        entry.first = entry.first - firstDate; // Normalize dates for computation
     }
 
     MatrixXd X(n, 2);
     VectorXd Y(n);
     for (int i = 0; i < n; ++i) {
-        X(i, 0) = 1;
-        X(i, 1) = data[i].first;
-        Y(i) = data[i].second;
+        X(i, 0) = 1; // Intercept term
+        X(i, 1) = data[i].first; // Date difference
+        Y(i) = data[i].second; // Sales value
     }
 
     VectorXd theta = (X.transpose() * X).ldlt().solve(X.transpose() * Y);
 
-    return theta(0) + theta(1) * (data[n - 1].first);
+    return theta(0) + theta(1) * (data[n - 1].first); // Predict sales for the most recent date
 }
 
-// Função para calcular as necessidades de matéria-prima
-vector<pair<string, double>> calculateMaterialNeeds(sqlite3* db, int produto_id, double predictedDemand) {
+// Function to calculate material requirements based on predicted demand
+vector<pair<string, double>> calculateMaterialNeeds(sqlite3* db, int product_id, double predictedDemand) {
     sqlite3_stmt* stmt;
-    const char* query = "SELECT Materia_Prima.nome, Taxa_Conversao.quantidade_materia_prima "
-                        "FROM Taxa_Conversao "
-                        "JOIN Materia_Prima ON Taxa_Conversao.materia_prima_id = Materia_Prima.id "
-                        "WHERE Taxa_Conversao.produto_id = ?;";
+    const char* query = "SELECT Raw_Material.name, Conversion_Rate.quantity_needed "
+                        "FROM Conversion_Rate "
+                        "JOIN Raw_Material ON Conversion_Rate.raw_material_id = Raw_Material.id "
+                        "WHERE Conversion_Rate.product_id = ?;";
     vector<pair<string, double>> materialNeeds;
     if (sqlite3_prepare_v2(db, query, -1, &stmt, 0) != SQLITE_OK) {
-        cerr << "Erro ao preparar query: " << sqlite3_errmsg(db) << endl;
+        cerr << "Error preparing query: " << sqlite3_errmsg(db) << endl;
         return materialNeeds;
     }
-    sqlite3_bind_int(stmt, 1, produto_id);
+    sqlite3_bind_int(stmt, 1, product_id);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         string materialName = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         double conversionRate = sqlite3_column_double(stmt, 1);
@@ -95,15 +95,15 @@ vector<pair<string, double>> calculateMaterialNeeds(sqlite3* db, int produto_id,
     return materialNeeds;
 }
 
-// Função para salvar os dados em um arquivo CSV
+// Function to save data to a CSV file
 void saveToCSV(const string& demand, const vector<pair<string, double>>& materialNeeds) {
-    const char* filePath = fl_file_chooser("Salvar Como", "*.csv", "");
+    const char* filePath = fl_file_chooser("Save As", "*.csv", "");
     if (filePath) {
         ofstream outFile(filePath);
-        outFile << "Produto,Demanda Prevista\n";
-        outFile << "Produto," << demand << "\n";
-        outFile << "\nMateriais Necessários\n";
-        outFile << "Materia Prima,Quantidade\n";
+        outFile << "Product,Predicted Demand\n";
+        outFile << "Product," << demand << "\n";
+        outFile << "\nRequired Materials\n";
+        outFile << "Raw Material,Quantity\n";
         for (const auto& material : materialNeeds) {
             outFile << material.first << "," << material.second << "\n";
         }
@@ -111,28 +111,28 @@ void saveToCSV(const string& demand, const vector<pair<string, double>>& materia
     }
 }
 
-// Função para calcular a previsão e exibir os resultados
-void calculatePrediction(Fl_Input* input, Fl_Multiline_Output* demandaBox, Fl_Multiline_Output* materialBox, Fl_Button* saveButton) {
+// Function to calculate prediction and display results in the UI
+void calculatePrediction(Fl_Input* input, Fl_Multiline_Output* demandBox, Fl_Multiline_Output* materialBox, Fl_Button* saveButton) {
     sqlite3* db = connectDB("production.db");
     if (!db) return;
 
-    int produto_id = stoi(input->value());
+    int product_id = stoi(input->value());
 
-    vector<pair<int, double>> salesData = getSalesData(db, produto_id);
+    vector<pair<int, double>> salesData = getSalesData(db, product_id);
     if (salesData.empty()) {
-        demandaBox->value("Nenhuma venda");
-        materialBox->value("Sem dados de matéria-prima");
+        demandBox->value("No sales data");
+        materialBox->value("No material data");
         sqlite3_close(db);
         saveButton->deactivate();
         return;
     }
 
     double predictedDemand = round(linearRegression(salesData));
-    string demandStr = "Demanda Prevista: " + to_string(static_cast<int>(predictedDemand));
-    demandaBox->value(demandStr.c_str());
+    string demandStr = "Predicted Demand: " + to_string(static_cast<int>(predictedDemand));
+    demandBox->value(demandStr.c_str());
 
-    vector<pair<string, double>> materialNeeds = calculateMaterialNeeds(db, produto_id, predictedDemand);
-    string materialStr = "Materiais Necessários:\n";
+    vector<pair<string, double>> materialNeeds = calculateMaterialNeeds(db, product_id, predictedDemand);
+    string materialStr = "Required Materials:\n";
     for (const auto& material : materialNeeds) {
         materialStr += material.first + ": " + to_string(static_cast<int>(material.second)) + "\n";
     }
@@ -142,29 +142,29 @@ void calculatePrediction(Fl_Input* input, Fl_Multiline_Output* demandaBox, Fl_Mu
     sqlite3_close(db);
 }
 
-// Função principal
+// Main function
 int main() {
-    Fl_Window* window = new Fl_Window(600, 550, "Previsão de Demanda e Materiais");
-    Fl_Input* input = new Fl_Input(200, 60, 200, 30, "ID Produto:");
-    Fl_Multiline_Output* demandaBox = new Fl_Multiline_Output(150, 120, 300, 30, "Demanda Prevista:");
-    Fl_Multiline_Output* materialBox = new Fl_Multiline_Output(150, 170, 300, 200, "Materiais Necessários:");
-    Fl_Button* button = new Fl_Button(200, 400, 200, 30, "Calcular");
-    Fl_Button* saveButton = new Fl_Button(200, 450, 200, 30, "Salvar .CSV");
+    Fl_Window* window = new Fl_Window(600, 550, "Demand and Material Prediction");
+    Fl_Input* input = new Fl_Input(200, 60, 200, 30, "Product ID:");
+    Fl_Multiline_Output* demandBox = new Fl_Multiline_Output(150, 120, 300, 30, "Predicted Demand:");
+    Fl_Multiline_Output* materialBox = new Fl_Multiline_Output(150, 170, 300, 200, "Required Materials:");
+    Fl_Button* button = new Fl_Button(200, 400, 200, 30, "Calculate");
+    Fl_Button* saveButton = new Fl_Button(200, 450, 200, 30, "Save .CSV");
 
     saveButton->deactivate();
 
     button->callback([](Fl_Widget*, void* v) {
         Fl_Input* input = ((Fl_Input**)v)[0];
-        Fl_Multiline_Output* demandaBox = ((Fl_Multiline_Output**)v)[1];
+        Fl_Multiline_Output* demandBox = ((Fl_Multiline_Output**)v)[1];
         Fl_Multiline_Output* materialBox = ((Fl_Multiline_Output**)v)[2];
         Fl_Button* saveButton = ((Fl_Button**)v)[3];
-        calculatePrediction(input, demandaBox, materialBox, saveButton);
-    }, new Fl_Widget* [4]{input, demandaBox, materialBox, saveButton});
+        calculatePrediction(input, demandBox, materialBox, saveButton);
+    }, new Fl_Widget* [4]{input, demandBox, materialBox, saveButton});
 
     saveButton->callback([](Fl_Widget*, void* v) {
-        Fl_Multiline_Output* demandaBox = ((Fl_Multiline_Output**)v)[0];
+        Fl_Multiline_Output* demandBox = ((Fl_Multiline_Output**)v)[0];
         Fl_Multiline_Output* materialBox = ((Fl_Multiline_Output**)v)[1];
-        string demand = demandaBox->value();
+        string demand = demandBox->value();
         
         vector<pair<string, double>> materialNeeds;
         stringstream ss(materialBox->value());
@@ -181,7 +181,7 @@ int main() {
         }
 
         saveToCSV(demand, materialNeeds);
-    }, new Fl_Widget* [2]{demandaBox, materialBox});
+    }, new Fl_Widget* [2]{demandBox, materialBox});
 
     window->end();
     window->show();
